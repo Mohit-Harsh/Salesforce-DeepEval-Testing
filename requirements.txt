@@ -1,0 +1,6 @@
+typer
+InquirerPy
+deepeval
+python-dotenv
+pandas 
+numpy
