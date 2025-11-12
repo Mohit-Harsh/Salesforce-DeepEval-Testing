@@ -121,7 +121,7 @@ def login():
 
         json_response = json.loads(result.stdout)
 
-    access_token = json_response['result'].get('access_token')
+    access_token = json_response['result'].get('accessToken')
     username = json_response["result"].get("username")
     instance_url = json_response["result"].get("instanceUrl")
 

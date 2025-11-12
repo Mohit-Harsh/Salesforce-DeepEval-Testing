@@ -220,7 +220,6 @@ def promptPreview(creds,promptTemplate):
             instruction += ' (required)'
         userInput[k] = inquirer.text(message=f"{inputs[k]['masterLabel']}:",instruction=instruction).execute()
 
-    console.print('UserInput: ',userInput)
 
     jsonRequest = parseJsonRequestBody(promptInputs=inputs, userInputs=userInput)
 
