@@ -91,7 +91,12 @@ def login():
         if instance_url:
             command.extend(["--instance-url", instance_url])
 
-        subprocess.run(command, check=False, shell=True, text=True, capture_output=False)
+        result = subprocess.run(command, check=False, shell=True, text=True, capture_output=False)
+
+        if result.returncode != 0:
+
+            console.print("[bold red]❌ Salesforce login failed. Please try again.[/bold red]")
+            return {"logged_in": False}
 
         # Simulate small progress updates for smooth UI experience
         for _ in range(3):

@@ -177,7 +177,9 @@ def main():
 
     creds = login()
 
-    start(creds)
+    if creds['logged_in']:
+
+        start(creds)
     
         
 

@@ -1,0 +1,6 @@
+__pycache__
+.deepeval
+SfdxProject
+DeepEval Cli.code-workspace
+.vscode
+.env

@@ -26,7 +26,8 @@ def create_project(
         console.print(f"❌ Project '{name}' already exists.")
         raise typer.Exit(code=1)
 
-    os.makedirs(project_dir)
+    command = ["sf", "project", "generate", "--projectname", name]
+    subprocess.run(command, check=False, shell=True, text=True, capture_output=False)
     console.print(f"✅ Created DeepEval project: {project_dir}")
 
 
