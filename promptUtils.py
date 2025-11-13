@@ -4,7 +4,7 @@ import os
 from InquirerPy.base.control import Choice
 import requests
 import subprocess
-import xml.etree.ElementTree as ET
+from rich import box
 from collections import defaultdict
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.table import Table
@@ -15,39 +15,26 @@ import json
 import time
 import html
 import re
-from InquirerPy.validator import PathValidator
-import pandas as pd
-import numpy as np
+import concurrent.futures
 import csv
 from deepeval.test_case import LLMTestCase
 from deepEval import deepEvalTest
+import xmltodict
 
 console = Console()
 
-def parse_inputs_from_xml(xml_content: str) -> dict:
+def promptTemplateMetadata(promptTemplate: str) -> dict:
+
     # Parse XML and handle namespaces
-    ns = {'ns': 'http://soap.sforce.com/2006/04/metadata'}
-    root = ET.fromstring(xml_content)
 
-    inputs_dict = {}
+    dir = os.path.join(os.getcwd(),f'force-app/main/default/genAiPromptTemplates/{promptTemplate}.genAiPromptTemplate-meta.xml')
 
-    # Iterate through <inputs> elements
-    for inp in root.findall(".//ns:inputs", ns):
-        api_name = inp.find("ns:apiName", ns).text if inp.find("ns:apiName", ns) is not None else None
-        definition = inp.find("ns:definition", ns).text if inp.find("ns:definition", ns) is not None else None
-        master_label = inp.find("ns:masterLabel", ns).text if inp.find("ns:masterLabel", ns) is not None else None
-        reference_name = inp.find("ns:referenceName", ns).text if inp.find("ns:referenceName", ns) is not None else None
-        required = inp.find("ns:required", ns).text.lower() == "true" if inp.find("ns:required", ns) is not None else False
+    with open(dir, "r", encoding="utf-8") as f:
+        xml_content = f.read()
 
-        if api_name:
-            inputs_dict[api_name] = {
-                "definition": definition,
-                "masterLabel": master_label,
-                "referenceName": reference_name,
-                "required": required
-            }
+    metadata = xmltodict.parse(xml_content)
 
-    return inputs_dict
+    return metadata
 
 def getPromptList(creds):
 
@@ -73,8 +60,6 @@ def getPromptList(creds):
 
 def getPromptTemplateInputs(apiName):
 
-    dir = os.path.join(os.getcwd(),f'force-app/main/default/genAiPromptTemplates/{apiName}.genAiPromptTemplate-meta.xml')
-
     with Progress(SpinnerColumn(),TextColumn("[progress.description]{task.description}"),transient=True) as progress:
 
         progress.add_task(description="Retrieving Prompt Template Metadata...",total=None)
@@ -91,13 +76,24 @@ def getPromptTemplateInputs(apiName):
         console.print("Error querying prompt template metadata")
 
         raise typer.Exit(code=1)
+    
+    templateVersions = promptTemplateMetadata(promptTemplate=apiName)['GenAiPromptTemplate']['templateVersions']
 
-    with open(dir, "r", encoding="utf-8") as f:
-        xml_content = f.read()
+    inputs = []
 
-    inputs = parse_inputs_from_xml(xml_content)
+    if type(templateVersions) == dict:
 
-    return inputs
+        inputs = templateVersions['inputs']
+
+    elif type(templateVersions) == list:
+
+        inputs = templateVersions[0]['inputs']
+
+    if type(inputs) == list:
+
+        return inputs
+
+    return [inputs]
 
 
 def parseJsonRequestBody(promptInputs, userInputs):
@@ -107,9 +103,9 @@ def parseJsonRequestBody(promptInputs, userInputs):
     value_map = {}
 
     # Iterate through prompt inputs and match with user-provided values
-    for input_api_name, input_details in promptInputs.items():
+    for input_details in promptInputs:
         definition = input_details.get("definition", "")
-        user_value = userInputs.get(input_api_name)
+        user_value = userInputs.get(input_details.get('apiName'))
 
         # Determine input type
         if definition.startswith("SOBJECT://"):
@@ -119,11 +115,11 @@ def parseJsonRequestBody(promptInputs, userInputs):
                 "value": {"id": user_value}
             }
         elif definition.startswith("primitive://"):
-            value_map[f"Input:{input_api_name}"] = {
+            value_map[f"Input:{input_details.get('apiName')}"] = {
                 "value": user_value
             }
         else:
-            raise ValueError(f"Unknown definition type for {input_api_name}: {definition}")
+            raise ValueError(f"Unknown definition type for {input_details.get('apiName')}: {definition}")
 
     # Construct full JSON request body
     body = {
@@ -139,55 +135,61 @@ def parseJsonRequestBody(promptInputs, userInputs):
     return body
 
 
-def promptPreviewRequest(instance_url, access_token, payload, api_name):
+def promptTemplateExecute(instance_url:str, access_token:str, payload:list[dict], api_name:str):
     """
     Send HTTP POST request to Einstein Prompt Template Generations endpoint.
     """
+
     headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
 
     url = f"{instance_url}/services/data/v60.0/einstein/prompt-templates/{api_name}/generations"
 
-    # Create a nice progress spinner while waiting for the API response
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TimeElapsedColumn(),
-        transient=True,
-        console=console
-    ) as progress:
-        task = progress.add_task("[bold cyan]Generating response from Einstein Prompt Template...", start=False)
-        progress.start_task(task)
+    try:
 
-        try:
-            # Simulate "thinking" progress while waiting for API
-            for _ in range(3):
-                time.sleep(0.6)
-                progress.advance(task, 20)
-
-            # Send API request
-            response = requests.post(url, headers=headers, data=json.dumps(payload))
-
-            # Simulate a short delay to complete progress bar nicely
-            for _ in range(2):
-                time.sleep(0.5)
-                progress.advance(task, 20)
+        # Send API request
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
         
-        except Exception as e:
+        # Return parsed response or raise error if failed
+        if response.status_code >= 200 and response.status_code < 300:
+            return response.json()
+        
+        else:
+            raise Exception(f"Request failed ({response.status_code}): {response.text}")
+        
+    except Exception as e:
+            
             console.print(f"[bold red]Error:[/bold red] {e}")
-            return None
-
-    # Return parsed response or raise error if failed
-    if response.status_code >= 200 and response.status_code < 300:
-        return response.json()
-    else:
-        raise Exception(f"Request failed ({response.status_code}): {response.text}")
+            raise Exception(f"Error: ({e})")
     
+def executeAll(instance_url:str, access_token:str, api_name:str, payload_list:list[dict], max_workers=5):
+    """
+    Execute promptTemplateExecute for multiple payloads in parallel.
+    """
+    results = []
 
-def promptPreview(creds,promptTemplate):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_payload = {
+            executor.submit(promptTemplateExecute, instance_url, access_token, payload, api_name): payload
+            for payload in payload_list
+        }
+
+        # Process results as they complete
+        for future in concurrent.futures.as_completed(future_to_payload):
+            payload = future_to_payload[future]
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                console.print(f"[red]Failed:[/red] Payload {payload} -> {e}")
+                results.append({"payload": payload, "error": str(e)})
+
+    return results
+
+def promptRun(creds, promptTemplate):
 
     inputs = getPromptTemplateInputs(promptTemplate)
 
@@ -213,17 +215,21 @@ def promptPreview(creds,promptTemplate):
         )
     )
 
-    for k in inputs.keys():
+    for k in inputs:
 
-        instruction = f"({inputs[k]['definition']})"
-        if inputs[k]['required']:
+        instruction = f"({k['definition']})"
+        if k['required']:
             instruction += ' (required)'
-        userInput[k] = inquirer.text(message=f"{inputs[k]['masterLabel']}:",instruction=instruction).execute()
+        userInput[k['apiName']] = inquirer.text(message=f"{k['masterLabel']}:",instruction=instruction).execute()
 
 
     jsonRequest = parseJsonRequestBody(promptInputs=inputs, userInputs=userInput)
 
-    jsonResponse = promptPreviewRequest(instance_url=creds['instance_url'],access_token=creds['access_token'],payload=jsonRequest,api_name=promptTemplate)
+    with console.status("[bold green]Running...[/]", spinner="dots"):
+
+        jsonResponse = executeAll(instance_url=creds['instance_url'],access_token=creds['access_token'],payload_list=[jsonRequest],api_name=promptTemplate)[0]
+
+    console.print("[green]:heavy_check_mark: [bold green]Prompt template executed successfully![/]")
 
     generation = jsonResponse['generations'][0]
 
@@ -255,6 +261,64 @@ def promptPreview(creds,promptTemplate):
     toxicity_detected = generation['contentQualityRepresentation']['isToxicityDetected']
     table.add_row("Toxicity Detected", str(toxicity_detected))
     console.print(table)
+    
+
+def promptPreview(creds,promptTemplate):
+
+    with console.status("[bold green]Fetching metadata, please wait...[/]", spinner="dots"):
+
+        result = subprocess.run(
+            ["sf", "project", "retrieve", "start", "--metadata",f"GenAiPromptTemplate:{promptTemplate}","--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+            shell=True  # Do not raise error on non-zero exit code
+        )
+
+    console.print("[green]:heavy_check_mark: [bold green]Metadata fetched successfully![/]")
+        
+    if result.returncode != 0:
+
+        console.print("Error querying prompt template metadata")
+
+        raise typer.Exit(code=1)
+
+    metadata = promptTemplateMetadata(promptTemplate)
+
+    # Extract metadata
+    template = metadata['GenAiPromptTemplate']
+    master_label = template['masterLabel']
+    developer_name = template['developerName']
+    inputs=[]
+    if type(template['templateVersions']) == dict:
+        inputs = template['templateVersions']['inputs']
+    elif type(template['templateVersions']) == list:
+        inputs = template['templateVersions'][0]['inputs'] 
+
+    # Create a header panel
+    console.print(Panel.fit(f"[bold blue]GenAI Prompt Template Metadata[/bold blue]", style="cyan", padding=(1, 2)))
+
+    # Create a summary table
+    summary_table = Table(title="Basic Information", box=box.SIMPLE_HEAVY)
+    summary_table.add_column("Field", style="bold green", no_wrap=True)
+    summary_table.add_column("Value", style="white")
+
+    summary_table.add_row("Master Label", master_label)
+    summary_table.add_row("Developer Name", developer_name)
+
+    # Display summary
+    console.print(summary_table)
+
+    # Create a detailed inputs table
+    inputs_table = Table(title="Inputs Metadata", box=box.MINIMAL_DOUBLE_HEAD)
+    inputs_table.add_column("Attribute", style="bold yellow", no_wrap=True)
+    inputs_table.add_column("Value", style="white")
+
+    for key, value in inputs.items():
+        inputs_table.add_row(key, str(value))
+
+    # Display inputs
+    console.print(inputs_table)
 
 
 def parseRetrievalContext(prompt):
@@ -281,37 +345,6 @@ def parseRetrievalContext(prompt):
                             chunks.append(field.get("value", "").strip())
 
         return chunks
-
-def promptTemplateExecute(instance_url, access_token, payload, api_name):
-
-    """
-    Send HTTP POST request to Einstein Prompt Template Generations endpoint.
-    """
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
-
-    url = f"{instance_url}/services/data/v60.0/einstein/prompt-templates/{api_name}/generations"
-
-    # Create a nice progress spinner while waiting for the API response
-    
-    try:
-
-        # Send API request
-        response = requests.post(url, headers=headers, data=json.dumps(payload))
-        
-        # Return parsed response or raise error if failed
-        if response.status_code >= 200 and response.status_code < 300:
-            return response.json()
-        
-        else:
-            raise Exception(f"Request failed ({response.status_code}): {response.text}")
-        
-    except Exception as e:
-            
-            console.print(f"[bold red]Error:[/bold red] {e}")
-            raise Exception(f"Error: ({e})")
 
 
 def promptTestSingle(creds,promptTemplate):

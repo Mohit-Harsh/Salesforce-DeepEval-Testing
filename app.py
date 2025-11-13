@@ -1,15 +1,12 @@
 # deep_eval_cli.py
 from InquirerPy import inquirer
 from rich.console import Console
-import os
 from dotenv import load_dotenv
 from InquirerPy.base.control import Choice
-import requests
 from promptUtils import *
 from agentUtils import *
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.panel import Panel
-from rich.markdown import Markdown
 from login import *
 
 load_dotenv()
@@ -117,9 +114,10 @@ def start(creds):
             choice = inquirer.select(
                 message="Choose an action for the Prompt Template:",
                 choices=[
-                    "Back",
                     "Preview",
-                    "Test"
+                    "Run",
+                    "Test",
+                    "Back"
                 ]
             ).execute()
             
@@ -130,6 +128,10 @@ def start(creds):
             elif choice == 'Test':
 
                 promptTestSingle(creds,promptTemplate)
+
+            elif choice == 'Run':
+
+                promptRun(creds,promptTemplate)
 
             elif choice == 'Back':
 

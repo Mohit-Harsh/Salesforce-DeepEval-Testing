@@ -3,6 +3,7 @@ import os
 import subprocess
 from rich.console import Console
 from app import main
+import asyncio
 
 console = Console()
 
