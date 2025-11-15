@@ -4,3 +4,4 @@ deepeval
 python-dotenv
 pandas 
 numpy
+xmltodict
