@@ -127,7 +127,7 @@ def start(creds):
 
             elif choice == 'Test':
 
-                promptTestSingle(creds,promptTemplate)
+                promptTest(creds,promptTemplate)
 
             elif choice == 'Run':
 

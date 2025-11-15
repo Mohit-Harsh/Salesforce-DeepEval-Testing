@@ -10,20 +10,23 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeEl
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
+from rich.pretty import Pretty
+from rich.align import Align
 import typer
 import json
 import time
 import html
 import re
 import concurrent.futures
-import csv
+import pandas as pd
+import numpy as np
 from deepeval.test_case import LLMTestCase
 from deepEval import deepEvalTest
 import xmltodict
 
 console = Console()
 
-def promptTemplateMetadata(promptTemplate: str) -> dict:
+def parseXmlMetadata(promptTemplate: str) -> dict:
 
     # Parse XML and handle namespaces
 
@@ -34,6 +37,14 @@ def promptTemplateMetadata(promptTemplate: str) -> dict:
 
     metadata = xmltodict.parse(xml_content)
 
+    if type(metadata['GenAiPromptTemplate']['templateVersions']) == dict:
+
+        metadata['GenAiPromptTemplate']['templateVersions'] = [metadata['GenAiPromptTemplate']['templateVersions']]
+
+    if type(metadata['GenAiPromptTemplate']['templateVersions'][0]['inputs']) == dict:
+
+        metadata['GenAiPromptTemplate']['templateVersions'][0]['inputs'] = [metadata['GenAiPromptTemplate']['templateVersions'][0]['inputs']]
+    
     return metadata
 
 def getPromptList(creds):
@@ -60,16 +71,13 @@ def getPromptList(creds):
 
 def getPromptTemplateInputs(apiName):
 
-    with Progress(SpinnerColumn(),TextColumn("[progress.description]{task.description}"),transient=True) as progress:
-
-        progress.add_task(description="Retrieving Prompt Template Metadata...",total=None)
-        result = subprocess.run(
-            ["sf", "project", "retrieve", "start", "--metadata",f"GenAiPromptTemplate:{apiName}","--json"],
-            capture_output=True,
-            text=True,
-            check=False,
-            shell=True  # Do not raise error on non-zero exit code
-        )
+    result = subprocess.run(
+        ["sf", "project", "retrieve", "start", "--metadata",f"GenAiPromptTemplate:{apiName}","--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        shell=True  # Do not raise error on non-zero exit code
+    )
         
     if result.returncode != 0:
 
@@ -77,23 +85,9 @@ def getPromptTemplateInputs(apiName):
 
         raise typer.Exit(code=1)
     
-    templateVersions = promptTemplateMetadata(promptTemplate=apiName)['GenAiPromptTemplate']['templateVersions']
+    templateVersions = parseXmlMetadata(promptTemplate=apiName)['GenAiPromptTemplate']['templateVersions']
 
-    inputs = []
-
-    if type(templateVersions) == dict:
-
-        inputs = templateVersions['inputs']
-
-    elif type(templateVersions) == list:
-
-        inputs = templateVersions[0]['inputs']
-
-    if type(inputs) == list:
-
-        return inputs
-
-    return [inputs]
+    return templateVersions[0]['inputs']
 
 
 def parseJsonRequestBody(promptInputs, userInputs):
@@ -135,7 +129,7 @@ def parseJsonRequestBody(promptInputs, userInputs):
     return body
 
 
-def promptTemplateExecute(instance_url:str, access_token:str, payload:list[dict], api_name:str):
+def promptTemplateExecute(instance_url:str, access_token:str, payload:dict, api_name:str):
     """
     Send HTTP POST request to Einstein Prompt Template Generations endpoint.
     """
@@ -227,7 +221,7 @@ def promptRun(creds, promptTemplate):
 
     with console.status("[bold green]Running...[/]", spinner="dots"):
 
-        jsonResponse = executeAll(instance_url=creds['instance_url'],access_token=creds['access_token'],payload_list=[jsonRequest],api_name=promptTemplate)[0]
+        jsonResponse = promptTemplateExecute(instance_url=creds['instance_url'],access_token=creds['access_token'],payload=jsonRequest,api_name=promptTemplate)
 
     console.print("[green]:heavy_check_mark: [bold green]Prompt template executed successfully![/]")
 
@@ -275,50 +269,80 @@ def promptPreview(creds,promptTemplate):
             shell=True  # Do not raise error on non-zero exit code
         )
 
-    console.print("[green]:heavy_check_mark: [bold green]Metadata fetched successfully![/]")
+    
         
     if result.returncode != 0:
 
         console.print("Error querying prompt template metadata")
 
         raise typer.Exit(code=1)
+    
+    console.print("[green]:heavy_check_mark: [bold green]Metadata fetched successfully![/]")
 
-    metadata = promptTemplateMetadata(promptTemplate)
+    metadata = parseXmlMetadata(promptTemplate)
 
-    # Extract metadata
+    # Extract main template
     template = metadata['GenAiPromptTemplate']
-    master_label = template['masterLabel']
-    developer_name = template['developerName']
-    inputs=[]
-    if type(template['templateVersions']) == dict:
-        inputs = template['templateVersions']['inputs']
-    elif type(template['templateVersions']) == list:
-        inputs = template['templateVersions'][0]['inputs'] 
 
-    # Create a header panel
-    console.print(Panel.fit(f"[bold blue]GenAI Prompt Template Metadata[/bold blue]", style="cyan", padding=(1, 2)))
+    # General Info Table
+    general_table = Table(box=None, show_header=False)
+    general_table.add_row("Developer Name", template['developerName'])
+    general_table.add_row("Master Label", template['masterLabel'])
+    general_table.add_row("Type", template['type'])
+    general_table.add_row("Visibility", template['visibility'])
+    general_table.add_row("Active Version", template['activeVersionIdentifier'])
 
-    # Create a summary table
-    summary_table = Table(title="Basic Information", box=box.SIMPLE_HEAVY)
-    summary_table.add_column("Field", style="bold green", no_wrap=True)
-    summary_table.add_column("Value", style="white")
+    console.print(Panel(general_table, title="General Information", style="bold cyan", border_style="bright_blue"))
 
-    summary_table.add_row("Master Label", master_label)
-    summary_table.add_row("Developer Name", developer_name)
+    # Template Content
+    console.print(Panel(
+        Align.left(template['templateVersions'][0]['content'][:300] + "...\n\n[dark_grey]Content truncated[/]"),
+        title="Template Content",
+        border_style="magenta",
+        padding=(1, 2)
+    ))
 
-    # Display summary
-    console.print(summary_table)
+    # Generation Configs
+    console.print(Panel(
+        Pretty(template['templateVersions'][0]['generationTemplateConfigs']),
+        title="Generation Configs",
+        border_style="yellow"
+    ))
 
-    # Create a detailed inputs table
-    inputs_table = Table(title="Inputs Metadata", box=box.MINIMAL_DOUBLE_HEAD)
-    inputs_table.add_column("Attribute", style="bold yellow", no_wrap=True)
-    inputs_table.add_column("Value", style="white")
+    # Inputs Section as a list of objects
+    inputs_table = Table(show_header=True, header_style="bold green")
+    inputs_table.add_column("API Name", style="cyan", no_wrap=True)
+    inputs_table.add_column("Definition", style="magenta")
+    inputs_table.add_column("Master Label", style="yellow")
+    inputs_table.add_column("Reference Name", style="green")
+    inputs_table.add_column("Required", style="red")
 
-    for key, value in inputs.items():
-        inputs_table.add_row(key, str(value))
+    # Iterate over list of input objects
+    for input_obj in template['templateVersions'][0]['inputs']:
+        inputs_table.add_row(
+            input_obj.get('apiName', ''),
+            input_obj.get('definition', ''),
+            input_obj.get('masterLabel', ''),
+            input_obj.get('referenceName', ''),
+            input_obj.get('required', '')
+        )
 
-    # Display inputs
-    console.print(inputs_table)
+    console.print(Panel(inputs_table, border_style="bright_green", title="Inputs Section"))
+
+    # Model & Status
+    model_table = Table(box=None, show_header=False)
+    model_table.add_row("Primary Model", template['templateVersions'][0]['primaryModel'])
+    model_table.add_row("Status", template['templateVersions'][0]['status'])
+    model_table.add_row("Version Identifier", template['templateVersions'][0]['versionIdentifier'])
+
+    console.print(Panel(model_table, title="Model & Status", border_style="bright_white"))
+
+    # Template Data Providers
+    console.print(Panel(
+        Pretty(template['templateVersions'][0]['templateDataProviders']),
+        title="Template Data Providers",
+        border_style="bright_magenta"
+    ))
 
 
 def parseRetrievalContext(prompt):
@@ -413,9 +437,13 @@ def promptTestSingle(creds,promptTemplate):
 
 def promptTest(creds,promptTemplate):
 
-    promptInputs = getPromptTemplateInputs(apiName=promptTemplate)
+    with console.status("[bold green]Fetching Metadata, please wait...[/]", spinner="dots"):
 
-    home_path = "~/" if os.name == "posix" else "C:\\"
+        promptInputs = getPromptTemplateInputs(apiName=promptTemplate)
+
+    console.print("[green]:heavy_check_mark: [bold green]Metadata fetched successfully![/]")
+
+    home_path = os.getcwd()
     src_path = inquirer.filepath(
         message="Enter file to upload:",
         default=home_path,
@@ -424,34 +452,13 @@ def promptTest(creds,promptTemplate):
     ).execute()
 
     # Read CSV and build structured dicts per row
-    value_maps = []
+    
+    df = pd.read_csv(src_path)
 
-    with open(src_path, newline='', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile)
-        
-        for row in reader:
-            value_map = {}
+    console.print(df)
+
+    
+    for index,row in df.iterrows(index=True):
+        for input_def in promptInputs:
+            console.print(f"{input_def['apiName']}: {row[input_def['apiName']]}")
             
-            for k,input_def in promptInputs.items():
-                api_name = k
-                definition = input_def["definition"]
-                user_value = row.get(api_name, "").strip()
-
-                # Skip empty optional fields
-                if not user_value and not input_def.get("required", False):
-                    continue
-
-                if definition.startswith("SOBJECT://"):
-                    sobject_name = definition.split("SOBJECT://")[-1]
-                    value_map[f"Input:{sobject_name}"] = {
-                        "value": {"id": user_value}
-                    }
-                elif definition.startswith("primitive://"):
-                    value_map[f"Input:{api_name}"] = {
-                        "value": user_value
-                    }
-
-            value_maps.append(value_map)
-
-    console.print('CSV File Read: \n')
-    console.print_json(value_maps)
