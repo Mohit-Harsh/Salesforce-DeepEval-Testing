@@ -367,16 +367,18 @@ def parseRetrievalContext(prompt):
 
 def promptTestSingle(creds,promptTemplate):
 
-    promptInputs = getPromptTemplateInputs(apiName=promptTemplate)
+    with console.status("[bold green]Retrieving Input Metadata, please wait...[/]", spinner="dots"):
+
+        promptInputs = getPromptTemplateInputs(apiName=promptTemplate)
     
     userInputs = defaultdict()
 
-    for k in promptInputs.keys():
+    for pinput in promptInputs:
 
-        instruction = f"({promptInputs[k]['definition']})"
-        if promptInputs[k]['required']:
+        instruction = f"({pinput['definition']})"
+        if pinput['required']:
             instruction += ' (required)'
-        userInputs[k] = inquirer.text(message=f"{promptInputs[k]['masterLabel']}:",instruction=instruction).execute()
+        userInputs[pinput['apiName']] = inquirer.text(message=f"{pinput['masterLabel']}:",instruction=instruction).execute()
 
     expected_output = inquirer.text(message=f"Expected Output: ",instruction='(required)').execute()
 
