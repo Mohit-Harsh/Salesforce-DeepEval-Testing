@@ -90,7 +90,7 @@ def getPromptTemplateInputs(apiName):
     return templateVersions[0]['inputs']
 
 
-def parseJsonRequestBody(promptInputs, userInputs):
+def parseJsonRequestBody(promptInputs: list[dict], userInputs: dict):
     """
     Build JSON request body for the Einstein Prompt Template Generations API.
     """
@@ -158,6 +158,10 @@ def promptTemplateExecute(instance_url:str, access_token:str, payload:dict, api_
             console.print(f"[bold red]Error:[/bold red] {e}")
             raise Exception(f"Error: ({e})")
     
+def simulatePromptTemplateExecute(instance_url, access_token, payload, api_name):
+    time.sleep(2)
+    return payload
+    
 def executeAll(instance_url:str, access_token:str, api_name:str, payload_list:list[dict], max_workers=5):
     """
     Execute promptTemplateExecute for multiple payloads in parallel.
@@ -167,19 +171,27 @@ def executeAll(instance_url:str, access_token:str, api_name:str, payload_list:li
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks
         future_to_payload = {
-            executor.submit(promptTemplateExecute, instance_url, access_token, payload, api_name): payload
+            executor.submit(simulatePromptTemplateExecute, instance_url, access_token, payload, api_name): payload
             for payload in payload_list
         }
 
         # Process results as they complete
-        for future in concurrent.futures.as_completed(future_to_payload):
-            payload = future_to_payload[future]
-            try:
-                result = future.result()
-                results.append(result)
-            except Exception as e:
-                console.print(f"[red]Failed:[/red] Payload {payload} -> {e}")
-                results.append({"payload": payload, "error": str(e)})
+
+        with Progress() as progress:
+            
+            task1 = progress.add_task("[red]Running Tests...", total=len(payload_list))
+
+            for future in concurrent.futures.as_completed(future_to_payload):
+                payload = future_to_payload[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    console.print(f"[red]Failed:[/red] Payload {payload} -> {e}")
+
+                progress.update(task1,advance=1)
+
+    console.print("[green]:heavy_check_mark: [bold green]All tests completed![/]")
 
     return results
 
@@ -268,8 +280,6 @@ def promptPreview(creds,promptTemplate):
             check=False,
             shell=True  # Do not raise error on non-zero exit code
         )
-
-    
         
     if result.returncode != 0:
 
@@ -290,7 +300,6 @@ def promptPreview(creds,promptTemplate):
     general_table.add_row("Master Label", template['masterLabel'])
     general_table.add_row("Type", template['type'])
     general_table.add_row("Visibility", template['visibility'])
-    general_table.add_row("Active Version", template['activeVersionIdentifier'])
 
     console.print(Panel(general_table, title="General Information", style="bold cyan", border_style="bright_blue"))
 
@@ -328,21 +337,6 @@ def promptPreview(creds,promptTemplate):
         )
 
     console.print(Panel(inputs_table, border_style="bright_green", title="Inputs Section"))
-
-    # Model & Status
-    model_table = Table(box=None, show_header=False)
-    model_table.add_row("Primary Model", template['templateVersions'][0]['primaryModel'])
-    model_table.add_row("Status", template['templateVersions'][0]['status'])
-    model_table.add_row("Version Identifier", template['templateVersions'][0]['versionIdentifier'])
-
-    console.print(Panel(model_table, title="Model & Status", border_style="bright_white"))
-
-    # Template Data Providers
-    console.print(Panel(
-        Pretty(template['templateVersions'][0]['templateDataProviders']),
-        title="Template Data Providers",
-        border_style="bright_magenta"
-    ))
 
 
 def parseRetrievalContext(prompt):
@@ -445,20 +439,35 @@ def promptTest(creds,promptTemplate):
 
     home_path = os.getcwd()
     src_path = inquirer.filepath(
-        message="Enter file to upload:",
-        default=home_path,
-        validate=lambda path:True if (os.path.isfile(path) and path.lower().endswith(".csv")) else False,
-        only_files=True,
+    message="Enter file to upload:",
+    default=home_path,
+    validate=lambda path:True if (os.path.isfile(path) and path.lower().endswith(".csv")) else False,
+    only_files=True,
     ).execute()
 
     # Read CSV and build structured dicts per row
-    
+
     df = pd.read_csv(src_path)
 
-    console.print(df)
+    user_inputs = []
 
+    for i,row in df.iterrows():
+        user_input = defaultdict()
+        for prompt_input in promptInputs:
+            user_input[prompt_input['apiName']] = row[prompt_input['apiName']]
+        user_inputs.append((prompt_input,user_input))
+
+    payload_list = []
+
+    for prompt_input,user_input in user_inputs:
+
+        payload = parseJsonRequestBody(promptInputs=promptInputs,userInputs=user_input)
+
+        payload_list.append(payload)
+
+    results = executeAll(instance_url=creds['instance_url'],access_token=creds['access_token'],api_name=promptTemplate,payload_list=payload_list)
+
+    console.print(results)
     
-    for index,row in df.iterrows(index=True):
-        for input_def in promptInputs:
-            console.print(f"{input_def['apiName']}: {row[input_def['apiName']]}")
+    
             
